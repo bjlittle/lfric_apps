@@ -8,19 +8,25 @@
 !> @details LFRic translation of the UM PWS divergence diagnostic, STASH
 !!          m01s20i005 (section 20 item 5, "DIVERGENCE",
 !!          UM src/atmosphere/PWS_diagnostics/pws_divergence_diag.F90).
-!!          Computes div_h = M3^{-1} D u_h in W3, where u_h is the W2 wind
-!!          with its vertical (W2V) DoFs set to zero and M3^{-1} D is the
-!!          cached inverse-mass-weighted weak divergence operator. All
-!!          spherical metric terms are handled by the coordinate Jacobian
-!!          inside the operator, replacing the UM's explicit lat-lon
-!!          cos(lat) factors, C-to-B-grid averaging and polar-row handling,
-!!          which have no cubed-sphere analogue.
+!!          Computes div_h = M3^{-1} D_h u_h in W3, where u_h is the
+!!          horizontal (W2H) part of the W2 wind and M3^{-1} D_h is the
+!!          cached directional inverse-mass-weighted weak divergence
+!!          operator. All spherical metric terms are handled by the
+!!          coordinate Jacobian inside the operator, replacing the UM's
+!!          explicit lat-lon cos(lat) factors, C-to-B-grid averaging and
+!!          polar-row handling, which have no cubed-sphere analogue.
+!!          On terrain-following levels this is the along-model-surface
+!!          divergence of the along-surface wind, converging to the true
+!!          horizontal divergence away from orography. The UM computes the
+!!          isobaric divergence (winds interpolated to pressure surfaces
+!!          before differencing); the definitions agree to leading order at
+!!          the upper levels the PWS product targets.
 !!          CF compliance: the result is divergence_of_wind in s-1. The
 !!          UM's x1.0e6 output scaling (a fieldsfile product convention
 !!          giving 1e-6 s-1) is deliberately NOT applied.
 module hwind_divergence_alg_mod
 
-  use constants_mod, only: i_def, r_def
+  use constants_mod, only: i_def
 
   implicit none
   private
@@ -33,69 +39,70 @@ contains
   !> @param[in]     wind   Prognostic wind field (W2)
   subroutine hwind_divergence_alg(div_h, wind)
 
-    use combine_w2_field_kernel_mod,   only: combine_w2_field_kernel_type
-    use dg_matrix_vector_kernel_mod,   only: dg_matrix_vector_kernel_type
-    use field_mod,                     only: field_type
-    use fs_continuity_mod,             only: W2, W2H, W2V, W3
-    use function_space_collection_mod, only: function_space_collection
-    use integer_field_mod,             only: integer_field_type
-    use mesh_mod,                      only: mesh_type
-    use operator_mod,                  only: operator_type
-    use sci_fem_constants_mod,         only: get_im3_div_fe, get_im3_div_fv
-    use sci_geometric_constants_mod,   only: get_face_selector_ew, &
-                                             get_face_selector_ns
-    use split_w2_field_kernel_mod,     only: split_w2_field_kernel_type
+    use dg_matrix_vector_kernel_mod,    only: dg_matrix_vector_kernel_type
+    use field_mod,                      only: field_type
+    use fs_continuity_mod,              only: W2H, W2V, W3
+    use function_space_collection_mod,  only: function_space_collection
+    use integer_field_mod,              only: integer_field_type
+    use log_mod,                        only: log_event, LOG_LEVEL_ERROR
+    use mesh_mod,                       only: mesh_type
+    use r_tran_operator_mod,            only: r_tran_operator_type
+    use sci_geometric_constants_mod,    only: get_face_selector_ew, &
+                                              get_face_selector_ns
+    use split_w2_field_kernel_mod,      only: split_w2_field_kernel_type
+    use transport_constants_mod,        only: get_directional_im3_div_r_tran, &
+                                              get_element_order_h_transport,  &
+                                              get_element_order_v_transport
+    use transport_enumerated_types_mod, only: direction_h
 
     implicit none
 
     type(field_type), intent(inout) :: div_h
     type(field_type), intent(in)    :: wind
 
-    type(field_type)                  :: uv_h    ! Horizontal (W2H) part of wind
-    type(field_type)                  :: w_v     ! Vertical (W2V) part; zeroed
-    type(field_type)                  :: wind_h  ! W2 wind with vertical DoFs = 0
-    type(integer_field_type), pointer :: face_selector_ew => null()
-    type(integer_field_type), pointer :: face_selector_ns => null()
-    type(operator_type),      pointer :: div => null()
-    type(mesh_type),          pointer :: mesh => null()
-    integer(kind=i_def)               :: element_order_h, element_order_v
+    type(field_type)                    :: uv_h  ! Horizontal (W2H) part of wind
+    type(field_type)                    :: w_v   ! Vertical (W2V) part; unused
+    type(integer_field_type), pointer   :: face_selector_ew => null()
+    type(integer_field_type), pointer   :: face_selector_ns => null()
+    type(r_tran_operator_type), pointer :: div => null()
+    type(mesh_type),          pointer   :: mesh => null()
+    integer(kind=i_def)                 :: element_order_h, element_order_v
 
     mesh => wind%get_mesh()
     element_order_h = wind%get_element_order_h()
     element_order_v = wind%get_element_order_v()
 
-    call uv_h%initialise(   vector_space = function_space_collection%get_fs( &
-                            mesh, element_order_h, element_order_v, W2H) )
-    call w_v%initialise(    vector_space = function_space_collection%get_fs( &
-                            mesh, element_order_h, element_order_v, W2V) )
-    call wind_h%initialise( vector_space = function_space_collection%get_fs( &
-                            mesh, element_order_h, element_order_v, W2) )
-    call div_h%initialise(  vector_space = function_space_collection%get_fs( &
-                            mesh, element_order_h, element_order_v, W3) )
+    ! The directional divergence operator is assembled on the transport
+    ! function spaces, so it can only be applied to the model wind when the
+    ! transport and model element orders coincide (true for all current
+    ! configurations, which run both at lowest order).
+    if ( element_order_h /= get_element_order_h_transport() .or. &
+         element_order_v /= get_element_order_v_transport() ) then
+      call log_event( 'hwind_divergence_alg: transport and model element ' // &
+                      'orders differ so the directional divergence '       // &
+                      'operator does not match the wind field',               &
+                      LOG_LEVEL_ERROR )
+    end if
+
+    call uv_h%initialise(  vector_space = function_space_collection%get_fs( &
+                           mesh, element_order_h, element_order_v, W2H) )
+    call w_v%initialise(   vector_space = function_space_collection%get_fs( &
+                           mesh, element_order_h, element_order_v, W2V) )
+    call div_h%initialise( vector_space = function_space_collection%get_fs( &
+                           mesh, element_order_h, element_order_v, W3) )
 
     face_selector_ew => get_face_selector_ew(mesh)
     face_selector_ns => get_face_selector_ns(mesh)
 
-    if (element_order_h > 0 .or. element_order_v > 0) then
-      ! Use finite element divergence operator
-      div => get_im3_div_fe(mesh%get_id())
-    else
-      ! Use finite volume divergence operator
-      div => get_im3_div_fv(mesh%get_id())
-    end if
+    ! Directional (horizontal) inverse-mass-weighted divergence, M3^{-1} D_h
+    div => get_directional_im3_div_r_tran(mesh%get_id(), direction_h)
 
     ! 1. Split wind into horizontal (W2H) and vertical (W2V) parts
-    ! 2. Zero the vertical part
-    ! 3. Recombine into a W2 field carrying only horizontal components
-    ! 4. Apply weak divergence: div_h = M3^{-1} D wind_h
-    call invoke( split_w2_field_kernel_type( uv_h, w_v, wind,            &
-                                             face_selector_ew,           &
-                                             face_selector_ns ),         &
-                 setval_c( w_v, 0.0_r_def ),                             &
-                 combine_w2_field_kernel_type( wind_h, uv_h, w_v,        &
-                                               face_selector_ew,         &
-                                               face_selector_ns ),       &
-                 dg_matrix_vector_kernel_type( div_h, wind_h, div ) )
+    ! 2. Apply the directional weak divergence: div_h = M3^{-1} D_h uv_h
+    call invoke( split_w2_field_kernel_type( uv_h, w_v, wind,   &
+                                             face_selector_ew,  &
+                                             face_selector_ns ), &
+                 dg_matrix_vector_kernel_type( div_h, uv_h, div ) )
 
     nullify( mesh, div, face_selector_ew, face_selector_ns )
 
