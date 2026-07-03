@@ -46,9 +46,10 @@ module diagnostics_calc_mod
 
   implicit none
   private
-  public :: write_divergence_diagnostic, &
-            write_pv_diagnostic,         &
-            write_hydbal_diagnostic,     &
+  public :: write_divergence_diagnostic,       &
+            write_hwind_divergence_diagnostic, &
+            write_pv_diagnostic,               &
+            write_hydbal_diagnostic,           &
             write_vorticity_diagnostic
 
 contains
@@ -325,4 +326,50 @@ subroutine write_pv_diagnostic(u_field, theta, rho, clock)
 
 end subroutine write_pv_diagnostic
 #endif
+
+!-------------------------------------------------------------------------------
+!> @brief    Horizontal divergence of wind on pressure levels.
+!> @details  UM lineage: STASH m01s20i005 (PWS section 20 item 5, "DIVERGENCE").
+!!           Computes CF divergence_of_wind (s-1) on model levels then
+!!           interpolates linearly in Exner to the standard pressure_levels
+!!           XIOS axis. Differences from the UM by design: the UM interpolates
+!!           winds to B-grid pressure levels then takes centred differences
+!!           (regular lat-lon grids only, with polar-row copy); here we
+!!           differentiate on model levels then interpolate, per the LFRic
+!!           plev idiom (cf. plev__pv, plev__xi3). The UM's x1.0e6 output
+!!           scaling is deliberately NOT applied.
+!> @param[in] u_field  The wind field (W2)
+!> @param[in] exner    Exner pressure (W3)
+!-------------------------------------------------------------------------------
+subroutine write_hwind_divergence_diagnostic(u_field, exner)
+  use hwind_divergence_alg_mod, only: hwind_divergence_alg
+#ifdef UM_PHYSICS
+  use pres_lev_diags_alg_mod,   only: pres_lev_field_alg
+#endif
+  implicit none
+
+  type(field_type), intent(in) :: u_field, exner
+
+  type(field_type) :: div_h
+#ifdef UM_PHYSICS
+  type(field_type) :: plev_div
+#endif
+  logical(l_def)   :: plev_div_flag
+  logical(l_def), parameter :: xi3_axis = .false.
+
+#ifdef UM_PHYSICS
+  plev_div_flag = init_diag(plev_div, 'plev__divergence_of_wind')
+#else
+  plev_div_flag = .false.
+#endif
+
+  if (plev_div_flag .and. use_xios_io) then
+    call hwind_divergence_alg(div_h, u_field)
+#ifdef UM_PHYSICS
+    call pres_lev_field_alg(div_h, exner, plev_div, xi3_axis)
+#endif
+  end if
+
+end subroutine write_hwind_divergence_diagnostic
+
 end module diagnostics_calc_mod

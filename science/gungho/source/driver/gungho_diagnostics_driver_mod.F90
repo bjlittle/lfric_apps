@@ -20,6 +20,7 @@ module gungho_diagnostics_driver_mod
   use diagnostics_io_mod,        only : write_scalar_diagnostic,               &
                                         write_vector_diagnostic
   use diagnostics_calc_mod,      only : write_divergence_diagnostic,           &
+                                        write_hwind_divergence_diagnostic,     &
                                         write_hydbal_diagnostic,               &
                                         write_vorticity_diagnostic,            &
                                         write_pv_diagnostic
@@ -247,6 +248,7 @@ contains
 #else
     call write_pv_diagnostic( u, theta, rho, modeldb%clock )
 #endif
+    call write_hwind_divergence_diagnostic( u, exner )
 
     ! Moisture fields
     if ( moisture_formulation /= moisture_formulation_dry ) then
