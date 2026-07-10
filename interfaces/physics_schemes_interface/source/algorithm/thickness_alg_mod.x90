@@ -1,0 +1,142 @@
+!-------------------------------------------------------------------------------
+! (c) Crown copyright 2026 Met Office. All rights reserved.
+! The file LICENCE, distributed with this code, contains details of the terms
+! under which the code may be used.
+!-------------------------------------------------------------------------------
+!> @brief Calculates the 1000-500 hPa layer thickness diagnostic.
+
+module thickness_alg_mod
+
+  use config_mod,                    only: config_type
+  use constants_mod,                 only: r_def, i_def
+  use field_mod,                     only: field_type
+  use field_collection_mod,          only: field_collection_type
+  use fs_continuity_mod,             only: Wtheta, W3
+  use function_space_collection_mod, only: function_space_collection
+  use function_space_mod,            only: function_space_type
+  use initialise_diagnostics_mod,    only: init_diag => init_diagnostic_field
+  use io_config_mod,                 only: use_xios_io
+  use mesh_mod,                      only: mesh_type
+  use planet_config_mod,             only: p_zero, kappa, gravity, cp
+  use planet_constants_mod,          only: ex_power
+  use sci_geometric_constants_mod,   only: get_height_fv
+  use timing_mod,                    only: start_timing, stop_timing, &
+                                           tik, LPROF
+
+  implicit none
+
+  private
+
+  public :: thickness_alg
+
+contains
+
+  !> @brief Calculate the 1000-500 hPa geopotential-height thickness.
+  !> @details Translation of UM STASH m01s20i001 ("THICKNESS : 1000-500 MB",
+  !!          src/atmosphere/PWS_diagnostics/pws_thickness_diag.F90:61-62:
+  !!          thickness = z(500 hPa) - z(1000 hPa), metres). The isobaric
+  !!          surface heights are computed internally on bespoke fixed
+  !!          pressure levels with the geo_on_pres kernel (LFRic port of UM
+  !!          vert_h_onto_p): linear-in-Exner interpolation of model-level
+  !!          heights, lapse-rate extrapolation below the surface (routine
+  !!          for 1000 hPa over orography) and hydrostatic extension above
+  !!          the model top. The UM STASH_to_CF.txt has no 20!1! entry; the
+  !!          CF table nevertheless carries an accepted (2020) name,
+  !! atmosphere_layer_thickness_expressed_as_geopotential_height_difference
+  !!          (canonical unit m), attached in the XIOS metadata. CF wants
+  !!          the layer bounds indicated by a coordinate variable, which
+  !!          this 2D field definition cannot yet express; the bounds are
+  !!          recorded in the long_name.
+  !!          No UM fieldsfile product scaling exists for this item, so
+  !!          none was dropped.
+  !!          Deliberate deltas from the UM:
+  !!          - The UM fills z(1000)/z(500) from the user's STASH 16202
+  !!            request (float-equality level match in phy_diag.F90); a
+  !!            missing level leaves rmdi (-1.07e9) in the work arrays and
+  !!            the unguarded subtraction then emits 0.0 (both missing) or
+  !!            +/-1e9 garbage (one missing). Computing both levels
+  !!            internally removes that failure mode.
+  !!          - No sf()/STASHwork gating: XIOS sampling replaces it.
+  !> @param[in] config          Application namelist configuration object
+  !> @param[in] exner_w3        Exner pressure in W3
+  !> @param[in] derived_fields  Group of derived fields
+  !> @param[in] theta_wth       Potential temperature
+  !> @param[in] twod_mesh       Current 2D mesh
+  subroutine thickness_alg(config, exner_w3, derived_fields, theta_wth, &
+                           twod_mesh)
+
+    use psykal_lite_phys_mod, only: invoke_geo_on_pres_kernel_type
+
+    implicit none
+
+    ! Arguments
+    type(config_type), intent(in) :: config
+
+    type( field_type ), intent(in)            :: exner_w3
+    type( field_collection_type ), intent(in) :: derived_fields
+    type( field_type ), intent(in)            :: theta_wth
+    type( mesh_type ),  intent(in), pointer   :: twod_mesh
+
+    ! Diagnostic output and work fields
+    type( field_type ) :: thickness
+    type( field_type ) :: geopot_1000, geopot_500
+
+    ! Internal variables
+    type( field_type ), pointer :: exner_wth  => null()
+    type( field_type ), pointer :: height_w3  => null()
+    type( field_type ), pointer :: height_wth => null()
+
+    type(function_space_type), pointer :: twod_fs => null()
+
+    logical :: thickness_flag
+
+    integer(tik) :: id
+
+    ! Bespoke pressure levels (Pa): independent of the runtime
+    ! pressure_levels axis by design (removes UM 16202 level-list
+    ! fragility).
+    integer(kind=i_def), parameter :: nplev = 1_i_def
+    real(kind=r_def), parameter :: plev_1000(nplev) = (/ 100000.0_r_def /)
+    real(kind=r_def), parameter :: plev_500(nplev)  = (/ 50000.0_r_def /)
+
+    if ( LPROF ) call start_timing( id, 'diags.thickness' )
+
+    thickness_flag = init_diag(thickness, 'aviation__thickness_1000_500hPa')
+
+    if (thickness_flag .and. use_xios_io) then
+
+      ! Unpack inputs
+      call derived_fields%get_field('exner_in_wth', exner_wth)
+      height_w3  => get_height_fv(config, exner_w3%get_mesh(), W3)
+      height_wth => get_height_fv(config, theta_wth%get_mesh(), Wtheta)
+
+      ! 2D work fields on the same space as the diagnostic field
+      twod_fs => function_space_collection%get_fs(twod_mesh, 0, 0, W3)
+      call geopot_1000%initialise(twod_fs)
+      call geopot_500%initialise(twod_fs)
+
+      ! Heights of the 1000 hPa and 500 hPa surfaces
+      call invoke_geo_on_pres_kernel_type(height_w3, exner_w3,         &
+                                          theta_wth, height_wth,       &
+                                          exner_wth, nplev, plev_1000, &
+                                          geopot_1000, p_zero, kappa,  &
+                                          cp, gravity, ex_power)
+      call invoke_geo_on_pres_kernel_type(height_w3, exner_w3,         &
+                                          theta_wth, height_wth,       &
+                                          exner_wth, nplev, plev_500,  &
+                                          geopot_500, p_zero, kappa,   &
+                                          cp, gravity, ex_power)
+
+      ! thickness = z(500 hPa) - z(1000 hPa)
+      ! (UM pws_thickness_diag.F90:61-62, STASH_thkn_500 = 20001)
+      call invoke( X_minus_Y(thickness, geopot_500, geopot_1000) )
+
+      call thickness%write_field()
+
+    end if
+
+    if ( LPROF ) call stop_timing( id, 'diags.thickness' )
+
+  end subroutine thickness_alg
+
+end module thickness_alg_mod
