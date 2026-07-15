@@ -1,0 +1,133 @@
+!-------------------------------------------------------------------------------
+! (c) Crown copyright 2026 Met Office. All rights reserved.
+! The file LICENCE, distributed with this code, contains details of the terms
+! under which the code may be used.
+!-------------------------------------------------------------------------------
+!> @brief Geopotential thickness between fixed pressure levels.
+!> @details Translation of UM STASH m01s20i002 (THICKNESS : 1000-850 MB;
+!!          UM pws_thickness_diag.F90: thickness = -z(1000 hPa) + z(850 hPa)).
+!!          The UM item has no fieldsfile product scaling; the output is a
+!!          plain geopotential height difference in m.
+!!          Deliberate deltas from the UM implementation:
+!!          * The 1000/850 hPa geopotential heights are computed bespoke
+!!            here (geo_on_pres kernel with a parameter plevs array) rather
+!!            than snapshotted from the STASH 16202 pressure-level request.
+!!            This removes the UM float-equality level-list fragility, where
+!!            a level absent from the 16202 request left the work array at
+!!            rmdi (~ -1.07e9) and the unguarded subtraction silently
+!!            produced 0.0 (both levels missing), ~ +1.07e9 (1000 hPa
+!!            missing) or ~ -1.07e9 (850 hPa missing).
+!!          * No sf()/STASHwork gating: XIOS sampling replaces it.
+
+module thickness_alg_mod
+
+  use config_mod,                    only: config_type
+  use constants_mod,                 only: r_def, i_def, l_def
+  use field_mod,                     only: field_type
+  use field_collection_mod,          only: field_collection_type
+  use fs_continuity_mod,             only: Wtheta, W3
+  use function_space_collection_mod, only: function_space_collection
+  use function_space_mod,            only: function_space_type
+  use initialise_diagnostics_mod,    only: init_diag => init_diagnostic_field
+  use io_config_mod,                 only: use_xios_io
+  use mesh_mod,                      only: mesh_type
+  use planet_config_mod,             only: p_zero, kappa, gravity, cp
+  use planet_constants_mod,          only: ex_power
+  use sci_geometric_constants_mod,   only: get_height_fv
+  use timing_mod,                    only: start_timing, stop_timing, tik, &
+                                           LPROF
+
+  implicit none
+
+  private
+
+  public :: thickness_alg
+
+contains
+
+  !> @brief Compute the 1000-850 hPa geopotential thickness (m).
+  !> @param[in] config          Application namelist configuration object
+  !> @param[in] exner_w3        Exner pressure in W3 space
+  !> @param[in] derived_fields  Group of derived fields
+  !> @param[in] theta_wth       Potential temperature
+  !> @param[in] twod_mesh       Current 2d mesh
+  subroutine thickness_alg(config, exner_w3, derived_fields, theta_wth, &
+                           twod_mesh)
+
+    use psykal_lite_phys_mod, only: invoke_geo_on_pres_kernel_type
+
+    implicit none
+
+    ! Arguments
+    type(config_type),           intent(in)          :: config
+    type(field_type),            intent(in)          :: exner_w3
+    type(field_collection_type), intent(in)          :: derived_fields
+    type(field_type),            intent(in)          :: theta_wth
+    type(mesh_type),             intent(in), pointer :: twod_mesh
+
+    ! Output diagnostic
+    type(field_type) :: thick_850
+
+    ! 2D work fields: geopotential height at the two fixed levels
+    type(field_type) :: geopot_1000, geopot_850
+
+    type(field_type), pointer :: exner_wth  => null()
+    type(field_type), pointer :: height_w3  => null()
+    type(field_type), pointer :: height_wth => null()
+
+    type(function_space_type), pointer :: twod_fs => null()
+
+    integer(kind=i_def), parameter :: nplev = 1_i_def
+    real(kind=r_def),    parameter :: plev_1000(nplev) = &
+                                      (/ 100000.0_r_def /)
+    real(kind=r_def),    parameter :: plev_850(nplev)  = &
+                                      (/ 85000.0_r_def /)
+
+    logical(kind=l_def) :: thick_850_flag
+    integer(tik)        :: id
+
+    if ( LPROF ) call start_timing( id, 'diags.thickness' )
+
+    thick_850_flag = init_diag(thick_850, 'aviation__geopot_thickness_850')
+
+    if (thick_850_flag .and. use_xios_io) then
+
+      ! Unpack fields
+      call derived_fields%get_field('exner_in_wth', exner_wth)
+      height_w3  => get_height_fv(config, exner_w3%get_mesh(), W3)
+      height_wth => get_height_fv(config, theta_wth%get_mesh(), Wtheta)
+
+      twod_fs => function_space_collection%get_fs(twod_mesh, 0, 0, W3)
+      call geopot_1000%initialise(twod_fs)
+      call geopot_850%initialise(twod_fs)
+
+      ! Geopotential height on the two fixed pressure surfaces,
+      ! interpolated linearly in Exner with below-surface and above-top
+      ! extrapolation (parity with UM vert_h_onto_p)
+      call invoke_geo_on_pres_kernel_type(height_w3, exner_w3,        &
+                                          theta_wth, height_wth,      &
+                                          exner_wth, nplev,           &
+                                          plev_1000, geopot_1000,     &
+                                          p_zero, kappa, cp, gravity, &
+                                          ex_power)
+      call invoke_geo_on_pres_kernel_type(height_w3, exner_w3,        &
+                                          theta_wth, height_wth,      &
+                                          exner_wth, nplev,           &
+                                          plev_850, geopot_850,       &
+                                          p_zero, kappa, cp, gravity, &
+                                          ex_power)
+
+      ! thickness = z(850 hPa) - z(1000 hPa), physically positive
+      ! (UM pws_thickness_diag.F90:65)
+      call invoke( X_minus_Y(thick_850, geopot_850, geopot_1000) )
+
+      ! Output diagnostic
+      call thick_850%write_field()
+
+    end if
+
+    if ( LPROF ) call stop_timing( id, 'diags.thickness' )
+
+  end subroutine thickness_alg
+
+end module thickness_alg_mod
