@@ -10,8 +10,10 @@ module comorph_diags_mod
   use constants_mod,       only: l_def
   use field_mod,           only: field_type
   use timing_mod,          only: start_timing, stop_timing, tik, LPROF
-  use initialise_diagnostics_mod,     only : init_diag &
-                                             => init_diagnostic_field
+  use icao_heights_kernel_mod,    only: icao_heights_kernel_type
+  use planet_constants_mod,       only: g_over_r_def
+  use initialise_diagnostics_mod, only : init_diag => init_diagnostic_field, &
+                                         diag_samp => diagnostic_to_be_sampled
 
   implicit none
 
@@ -29,7 +31,8 @@ module comorph_diags_mod
                       entrain_down_flag,           &
                       detrain_up_flag,             &
                       detrain_down_flag,           &
-                      massflux_up_half_flag
+                      massflux_up_half_flag,       &
+                      lowest_cloud_top_icao_height_flag
 
   public :: initialise_diags_for_comorph
   public :: output_diags_for_comorph
@@ -84,8 +87,15 @@ contains
 
     pres_lowest_cv_base_flag = init_diag(pres_lowest_cv_base, &
                                          'convection__pres_lowest_cv_base')
+    ! ICAO height of the lowest convective cloud top (UM STASH m01s05i225)
+    ! needs pres_lowest_cv_top filled even when only the ICAO height is
+    ! sampled, hence the activate dependency below.
+    lowest_cloud_top_icao_height_flag = &
+      diag_samp('convection__conv_lowest_cloud_top_icao_height')
+
     pres_lowest_cv_top_flag = init_diag(pres_lowest_cv_top, &
-                                        'convection__pres_lowest_cv_top')
+      'convection__pres_lowest_cv_top', &
+      activate=lowest_cloud_top_icao_height_flag)
 
     lowest_cca_2d_flag = init_diag(lowest_cca_2d, &
                                    'convection__lowest_cca_2d')
@@ -185,6 +195,10 @@ contains
                                        massflux_up_half
     integer(tik)  :: id
 
+    ! ICAO height of the lowest convective cloud top (UM STASH m01s05i225)
+    type( field_type ) :: lowest_cloud_top_icao_height
+    logical( l_def )   :: ignore
+
     if ( LPROF ) call start_timing( id, 'diags.comorph' )
 
     ! Prognostic fields
@@ -211,6 +225,24 @@ contains
     call conv_rain_3d%write_field('convection__conv_rain_3d')
     call conv_snow_3d%write_field('convection__conv_snow_3d')
     call cca_2d%write_field('convection__cca_2d')
+
+    ! Diagnostics computed outside the kernel
+    ! 2D
+    ! ICAO standard atmosphere height of the lowest convective cloud top:
+    ! UM STASH m01s05i225 (section 5 convection diagnostic). Analytic
+    ! 3-layer ISA form (as the UM PWS twin icao_ht_fc.F90) replaces the
+    ! UM item's 15-point interpolation table (differences <= ~430 ft
+    ! above 100 hPa, growing to ~2900 ft at the 10 hPa clamp floor).
+    ! kft is the product unit: the UM's ft -> kft factor is part of the
+    ! product definition, and no fieldsfile scaling exists for this item.
+    ! Columns without convective cloud carry rmdi, as in the UM.
+    if (lowest_cloud_top_icao_height_flag) then
+      ignore = init_diag(lowest_cloud_top_icao_height, &
+        'convection__conv_lowest_cloud_top_icao_height')
+      call invoke(icao_heights_kernel_type( &
+        lowest_cloud_top_icao_height, pres_lowest_cv_top, g_over_r_def))
+      call lowest_cloud_top_icao_height%write_field()
+    end if
 
     ! Diagnostics computed within the kernel
     ! 2D

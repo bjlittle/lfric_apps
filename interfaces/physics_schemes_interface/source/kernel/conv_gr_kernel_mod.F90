@@ -14,7 +14,7 @@ module conv_gr_kernel_mod
                                       GH_READWRITE, DOMAIN,      &
                                       ANY_DISCONTINUOUS_SPACE_1, &
                                       ANY_DISCONTINUOUS_SPACE_2
-  use constants_mod,           only : i_def, i_um, r_def, r_um
+  use constants_mod,           only : i_def, i_um, r_def, r_um, rmdi
   use tuning_segments_mod,     only : conv_gr_segment_size
   use empty_data_mod,          only : empty_real_data
   use fs_continuity_mod,       only : W3, Wtheta
@@ -2748,7 +2748,7 @@ contains
           if (lctop(i,1) > 0) then
             pres_lowest_cv_top(map_2d(1,i)) = p_rho_levels(i,1,lctop(i,1))
           else
-            pres_lowest_cv_top(map_2d(1,i)) = 0.0_r_def
+            pres_lowest_cv_top(map_2d(1,i)) = rmdi
           end if
         end do
       end if
