@@ -10,8 +10,12 @@ module comorph_diags_mod
   use constants_mod,       only: l_def
   use field_mod,           only: field_type
   use timing_mod,          only: start_timing, stop_timing, tik, LPROF
-  use initialise_diagnostics_mod,     only : init_diag &
-                                             => init_diagnostic_field
+  use icao_heights_kernel_mod,        only: icao_heights_kernel_type
+  use planet_constants_mod,           only: g_over_r_def
+  use initialise_diagnostics_mod,     only: init_diag &
+                                            => init_diagnostic_field, &
+                                            diag_samp &
+                                            => diagnostic_to_be_sampled
 
   implicit none
 
@@ -29,7 +33,8 @@ module comorph_diags_mod
                       entrain_down_flag,           &
                       detrain_up_flag,             &
                       detrain_down_flag,           &
-                      massflux_up_half_flag
+                      massflux_up_half_flag,       &
+                      lowest_cloud_base_icao_height_flag
 
   public :: initialise_diags_for_comorph
   public :: output_diags_for_comorph
@@ -82,8 +87,13 @@ contains
     pres_cv_base_flag = init_diag(pres_cv_base, 'convection__pres_cv_base')
     pres_cv_top_flag = init_diag(pres_cv_top, 'convection__pres_cv_top')
 
-    pres_lowest_cv_base_flag = init_diag(pres_lowest_cv_base, &
-                                         'convection__pres_lowest_cv_base')
+    ! STASH m01s05i224 lineage: ICAO height (kft) of lowest conv cloud base.
+    lowest_cloud_base_icao_height_flag = &
+      diag_samp('convection__conv_lowest_cloud_base_icao_height')
+
+    pres_lowest_cv_base_flag = init_diag(pres_lowest_cv_base,      &
+                                 'convection__pres_lowest_cv_base', &
+                                 activate=lowest_cloud_base_icao_height_flag)
     pres_lowest_cv_top_flag = init_diag(pres_lowest_cv_top, &
                                         'convection__pres_lowest_cv_top')
 
@@ -184,6 +194,8 @@ contains
                                        detrain_down,           &
                                        massflux_up_half
     integer(tik)  :: id
+    type( field_type ) :: lowest_cloud_base_icao_height
+    logical( l_def )   :: ignore
 
     if ( LPROF ) call start_timing( id, 'diags.comorph' )
 
@@ -211,6 +223,21 @@ contains
     call conv_rain_3d%write_field('convection__conv_rain_3d')
     call conv_snow_3d%write_field('convection__conv_snow_3d')
     call cca_2d%write_field('convection__cca_2d')
+
+    ! Diagnostics computed outside the kernel
+    ! 2D
+    ! STASH m01s05i224 (ICAO HT OF LOWEST CONV CLOUD BASE) lineage:
+    ! kft is the UM product unit - no fieldsfile scaling exists.
+    ! Analytic 3-layer ISA (UM PWS icao_ht_fc.F90) replaces UM icao_ht.F90's
+    ! 15-pt table+quadratic: deltas <= ~430 ft above 100 hPa, ~2900 ft at
+    ! the 1000 Pa clamp floor.
+    if (lowest_cloud_base_icao_height_flag) then
+      ignore = init_diag(lowest_cloud_base_icao_height, &
+        'convection__conv_lowest_cloud_base_icao_height')
+      call invoke(icao_heights_kernel_type( &
+        lowest_cloud_base_icao_height, pres_lowest_cv_base, g_over_r_def))
+      call lowest_cloud_base_icao_height%write_field()
+    end if
 
     ! Diagnostics computed within the kernel
     ! 2D
