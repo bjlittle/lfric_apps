@@ -79,7 +79,7 @@
       <field field_ref="convection__conv_snow" name="conv_snow_average"/>
       <field field_ref="processed__total_prec" name="total_prec_average"/>
       <field field_ref="convection__lowest_cca_2d" name="conv_lowest_cca_average"/>
-      <field field_ref="convection__pres_lowest_cv_base" name="conv_pressure_lowest_base_average"/>
+      <field field_ref="convection__pres_lowest_cv_base" name="conv_pressure_lowest_base_average" detect_missing_value=".TRUE."/>
       <field field_ref="convection__pres_lowest_cv_top" name="conv_pressure_lowest_top_average"/>
       <field field_ref="cloud__low_type_cloud_amount" name="low_type_cloud_average"/>
       <field field_ref="cloud__medium_type_cloud_amount" name="medium_type_cloud_average"/>
@@ -141,6 +141,7 @@
       <field field_ref="soil__soil_moisture_content"/> 
       <field field_ref="surface__grid_canopy_water"/> 
       <field field_ref="cloud__cloud_amount_rnd"/> 
+      <field field_ref="convection__conv_lowest_cloud_base_icao_height"/>
     </field_group>     
     
     <field_group operation="average" freq_op="3h" prec="4">  
@@ -152,7 +153,7 @@
       <field field_ref="convection__conv_snow" name="conv_snow_average"/>   
       <field field_ref="processed__total_prec" name="total_prec_average"/>
       <field field_ref="convection__lowest_cca_2d" name="conv_lowest_cca_average"/>
-      <field field_ref="convection__pres_lowest_cv_base" name="conv_pressure_lowest_base_average"/>
+      <field field_ref="convection__pres_lowest_cv_base" name="conv_pressure_lowest_base_average" detect_missing_value=".TRUE."/>
       <field field_ref="convection__pres_lowest_cv_top" name="conv_pressure_lowest_top_average"/>
       <field field_ref="cloud__very_low_type_cloud_amount" name="very_low_type_cloud_average"/>
       <field field_ref="cloud__low_type_cloud_amount" name="low_type_cloud_average"/>
@@ -166,7 +167,7 @@
     <!-- 2D fields, maximum over sampling period -->
     <field_group operation="maximum" freq_op="1ts" prec="4">
       <field field_ref="processed__total_prec" name="total_prec_maximum"/>
-      <field field_ref="convection__pres_lowest_cv_base" name="conv_pres_lowest_cv_base_maximum"/>     
+      <field field_ref="convection__pres_lowest_cv_base" name="conv_pres_lowest_cv_base_maximum" detect_missing_value=".TRUE."/>     
     </field_group> 
           
     <!-- 2D fields, minimum over sampling period -->
